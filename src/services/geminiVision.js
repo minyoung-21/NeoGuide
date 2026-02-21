@@ -39,8 +39,8 @@ Depth zones and safety:
 
 If the image does not show an airway or is not a medical/laryngoscopy image, set image_quality to "no_airway_visible" and depth_zone to "unknown".`;
 
-const model = genAI.getGenerativeModel({ 
-  model: 'gemini-2.0-flash',
+const model = genAI.getGenerativeModel({
+  model: 'gemini-3-pro-preview',
   generationConfig: {
     temperature: 0.1,
     maxOutputTokens: 500,
@@ -67,11 +67,69 @@ export async function analyzeFrame(base64Image, mimeType = 'image/jpeg') {
 
     const response = result.response;
     const text = response.text().trim();
-    
+
+    console.log('Gemini raw response:', text.substring(0, 200));
+
     // Clean up response - remove markdown backticks if present
     const cleaned = text.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
-    
-    const data = JSON.parse(cleaned);
+
+    let data = null;
+
+    // Approach 1: direct parse
+    try {
+      data = JSON.parse(cleaned);
+    } catch (_) { }
+
+    // Approach 2: regex extract first {...} block
+    if (!data) {
+      try {
+        const match = cleaned.match(/\{[\s\S]*\}/);
+        if (match) data = JSON.parse(match[0]);
+      } catch (_) { }
+    }
+
+    // Approach 3: fix trailing commas and single quotes, then parse
+    if (!data) {
+      try {
+        const fixed = cleaned
+          .replace(/,\s*([}\]])/g, '$1')   // remove trailing commas
+          .replace(/'/g, '"');              // replace single quotes with double quotes
+        const match = fixed.match(/\{[\s\S]*\}/);
+        if (match) data = JSON.parse(match[0]);
+      } catch (_) { }
+    }
+
+    // Approach 4: regex-extract individual fields as fallback
+    if (!data) {
+      const extract = (pattern, fallback) => {
+        const m = cleaned.match(pattern);
+        return m ? m[1] : fallback;
+      };
+      const extractFloat = (pattern, fallback) => {
+        const m = cleaned.match(pattern);
+        return m ? parseFloat(m[1]) : fallback;
+      };
+      const extractBool = (pattern) => {
+        const m = cleaned.match(pattern);
+        return m ? m[1].toLowerCase() === 'true' : false;
+      };
+      data = {
+        depth_zone: extract(/"depth_zone"\s*:\s*"([^"]+)"/, 'unknown'),
+        safety_status: extract(/"safety_status"\s*:\s*"([^"]+)"/, 'safe'),
+        guidance_message: extract(/"guidance_message"\s*:\s*"([^"]+)"/, 'Unable to parse response'),
+        estimated_depth_cm: extractFloat(/"estimated_depth_cm"\s*:\s*([\d.]+)/, 0),
+        image_quality: extract(/"image_quality"\s*:\s*"([^"]+)"/, 'poor'),
+        landmarks: {
+          epiglottis: { visible: extractBool(/"epiglottis"[\s\S]*?"visible"\s*:\s*(true|false)/), confidence: 0 },
+          vocal_cords: { visible: extractBool(/"vocal_cords"[\s\S]*?"visible"\s*:\s*(true|false)/), confidence: 0 },
+          tracheal_rings: { visible: extractBool(/"tracheal_rings"[\s\S]*?"visible"\s*:\s*(true|false)/), confidence: 0 },
+          carina: { visible: extractBool(/"carina"[\s\S]*?"visible"\s*:\s*(true|false)/), confidence: 0 },
+          esophagus: { visible: extractBool(/"esophagus"[\s\S]*?"visible"\s*:\s*(true|false)/), confidence: 0 },
+          glottis: { visible: extractBool(/"glottis"[\s\S]*?"visible"\s*:\s*(true|false)/), confidence: 0 },
+        },
+      };
+    }
+
     return {
       success: true,
       ...data,
