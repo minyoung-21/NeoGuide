@@ -40,7 +40,7 @@ Depth zones and safety:
 If the image does not show an airway or is not a medical/laryngoscopy image, set image_quality to "no_airway_visible" and depth_zone to "unknown".`;
 
 const model = genAI.getGenerativeModel({
-  model: 'gemini-3-pro-preview',
+  model: 'gemini-2.0-flash',
   generationConfig: {
     temperature: 0.1,
     maxOutputTokens: 500,

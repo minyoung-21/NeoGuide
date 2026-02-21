@@ -39,7 +39,6 @@ export default function Dashboard() {
   // ═══════════════════════════════════════
   const { videoRef, isActive, error: camError, devices, startCamera, stopCamera } = useWebcam();
   const [analysis, setAnalysis] = useState(null);
-  const [previousAnalysis, setPreviousAnalysis] = useState(null);
   const [eventLog, setEventLog] = useState([]);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [analysisInterval, setAnalysisInterval] = useState(null);
@@ -47,7 +46,7 @@ export default function Dashboard() {
   const [voiceStatus, setVoiceStatus] = useState('idle');
   const [alertsPreloaded, setAlertsPreloaded] = useState(false);
   const [fps, setFps] = useState(0);
-  const [vitals] = useState({ spo2: 94, heartRate: 142, respRate: 48 });
+  const [vitals, setVitals] = useState({ spo2: 94, heartRate: 142, respRate: 48 });
   const analysisRef = useRef(null);
 
   // ═══════════════════════════════════════
@@ -63,7 +62,7 @@ export default function Dashboard() {
       const { base64, mimeType } = captureFrame(videoRef.current);
       const result = await analyzeFrame(base64, mimeType);
 
-      setPreviousAnalysis(prev => analysisRef.current);
+      const prevResult = analysisRef.current; // capture BEFORE overwriting
       setAnalysis(result);
       analysisRef.current = result;
 
@@ -73,7 +72,7 @@ export default function Dashboard() {
 
       // Determine and trigger voice alerts
       if (voiceEnabled && result.success) {
-        const alertKey = determineAlert(result, analysisRef.current);
+        const alertKey = determineAlert(result, prevResult);
         if (alertKey) {
           speakAlert(alertKey);
           setVoiceStatus(alertKey);
@@ -83,7 +82,7 @@ export default function Dashboard() {
 
       // Log significant events
       if (result.success && result.image_quality !== 'no_airway_visible') {
-        if (!analysisRef.current || result.depth_zone !== analysisRef.current.depth_zone) {
+        if (!prevResult || result.depth_zone !== prevResult.depth_zone) {
           addEvent(`Depth zone: ${result.depth_zone} (${result.estimated_depth_cm}cm)`, result.safety_status);
         }
       }
@@ -122,6 +121,25 @@ export default function Dashboard() {
   useEffect(() => {
     preloadAlerts().then(() => setAlertsPreloaded(true)).catch(console.error);
   }, []);
+
+  // Animate vitals — values drift based on current safety status
+  useEffect(() => {
+    const id = setInterval(() => {
+      setVitals(prev => {
+        const danger = currentStatus === 'danger';
+        const warning = currentStatus === 'warning';
+        const spo2Target = danger ? 78 : warning ? 88 : 96;
+        const hrTarget  = danger ? 85 : warning ? 115 : 142;
+        const rrTarget  = danger ? 65 : warning ? 55 : 48;
+        return {
+          spo2:      Math.round(prev.spo2      + (spo2Target - prev.spo2)     * 0.12 + (Math.random() - 0.5) * 1.5),
+          heartRate: Math.round(prev.heartRate + (hrTarget   - prev.heartRate) * 0.1  + (Math.random() - 0.5) * 3),
+          respRate:  Math.round(prev.respRate  + (rrTarget   - prev.respRate)  * 0.1  + (Math.random() - 0.5) * 1),
+        };
+      });
+    }, 900);
+    return () => clearInterval(id);
+  }, [currentStatus]);
 
   // Cleanup interval on unmount
   useEffect(() => {
