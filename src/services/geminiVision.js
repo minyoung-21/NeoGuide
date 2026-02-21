@@ -9,11 +9,44 @@ import { GoogleGenerativeAI } from '@google/generative-ai';
 
 const genAI = new GoogleGenerativeAI(import.meta.env.VITE_GEMINI_API_KEY);
 
-const SYSTEM_PROMPT = `You are NeoGuide, a neonatal intubation guidance AI system. You analyze laryngoscopy/endoscopy camera images to help doctors safely intubate newborn babies.
+const SYSTEM_PROMPT = `You are a medical image classifier for a neonatal intubation guidance system. Your job is to identify ALL visible anatomical structures — not just the most obvious one.
 
-Analyze the provided image and identify anatomical structures visible during intubation. Return ONLY valid JSON (no markdown, no backticks, no explanation) in this exact format:
+STEP 1 — Is this an airway image?
+Is this a laryngoscopy or airway endoscopy showing the inside of a human airway (larynx, trachea)?
+- YES → continue to Step 2
+- NO → set image_quality to "no_airway_visible", all landmarks visible:false, set identified_as to what it actually is (e.g. "esophageal endoscopy", "stomach lining", "face", "room/object", "skin surface", etc.)
 
+STEP 2 — Detect ALL landmarks independently.
+Evaluate each landmark on its own — if one is unclear that does NOT make the whole image "no_airway_visible". Be thorough: report every structure you can see, even partially. The confidence score reflects how clearly visible it is (0.3 = partially visible, 0.7 = clearly visible, 0.9 = unmistakable).
+
+What each landmark looks like:
+- epiglottis: curved leaf/omega-shaped pinkish flap at the top of the frame, above the glottis. Present in pre-glottic views. Often the first structure seen on laryngoscopy.
+- vocal_cords: two symmetric pale/white elongated folds forming a V or triangular opening. Very prominent white bands on either side of the dark glottic space.
+- glottis: the dark triangular or oval opening between the vocal cords. Visible whenever vocal cords are seen.
+- tracheal_rings: repeating pale horizontal C-shaped or arc-shaped cartilage bands lining the tracheal wall, like a ribbed tube or ladder pattern. Present in tracheal views below the cords.
+- carina: a prominent Y-shaped or wedge-shaped ridge at the bottom of the trachea, dividing it into left and right bronchi.
+- esophagus: a round/oval opening with reddish-pink fleshy walls and a collapsed slit-like lumen — this is NOT the airway, flag it if seen.
+
+STEP 3 — Pick the depth zone based on which landmarks are visible:
+- pre_glottic: epiglottis visible, approaching vocal cords → safe
+- glottic: vocal cords and/or glottis clearly visible → safe
+- subglottic: just passed the vocal cords, upper trachea, rings not yet visible → safe
+- tracheal: tracheal rings visible → safe
+- carinal: carina visible or approaching → warning
+- bronchial: past carina, inside a bronchus → danger
+
+Rules:
+- Return ONLY valid JSON. No markdown, no backticks, no explanation text before or after.
+- All 6 landmark keys must always be present.
+- confidence must be a number, not a string.
+- estimated_depth_cm must be a number.
+
+Example (glottic view):
+{"identified_as":"glottic view with vocal cords and glottis","landmarks":{"epiglottis":{"visible":false,"confidence":0.1},"vocal_cords":{"visible":true,"confidence":0.92},"tracheal_rings":{"visible":false,"confidence":0.05},"carina":{"visible":false,"confidence":0.0},"esophagus":{"visible":false,"confidence":0.0},"glottis":{"visible":true,"confidence":0.88}},"depth_zone":"glottic","safety_status":"safe","guidance_message":"Vocal cords and glottis clearly visible — advance tube through the glottis now.","estimated_depth_cm":0.5,"image_quality":"good"}
+
+Schema:
 {
+  "identified_as": "brief description of all structures visible",
   "landmarks": {
     "epiglottis": { "visible": true/false, "confidence": 0.0-1.0 },
     "vocal_cords": { "visible": true/false, "confidence": 0.0-1.0 },
@@ -24,20 +57,21 @@ Analyze the provided image and identify anatomical structures visible during int
   },
   "depth_zone": "pre_glottic" | "glottic" | "subglottic" | "tracheal" | "carinal" | "bronchial" | "unknown",
   "safety_status": "safe" | "warning" | "danger",
-  "guidance_message": "Brief clinical guidance message",
+  "guidance_message": "one sentence listing all structures seen and recommended action",
   "estimated_depth_cm": 0.0,
   "image_quality": "good" | "fair" | "poor" | "no_airway_visible"
-}
+}`;
 
-Depth zones and safety:
-- pre_glottic (0-1cm): Approaching vocal cords → SAFE
-- glottic (1-2cm): At vocal cords → SAFE  
-- subglottic (2-3cm): Just past vocal cords → SAFE
-- tracheal (3-5cm): Mid-trachea → SAFE (optimal placement zone for neonates)
-- carinal (5-6cm): Approaching carina → WARNING
-- bronchial (6+cm): Past carina, in bronchus → DANGER
-
-If the image does not show an airway or is not a medical/laryngoscopy image, set image_quality to "no_airway_visible" and depth_zone to "unknown".`;
+// Derived depth values per zone — more reliable than Gemini's guesses
+const ZONE_DEPTH_CM = {
+  pre_glottic: 0.0,
+  glottic:     0.5,
+  subglottic:  1.0,
+  tracheal:    2.0,
+  carinal:     3.5,
+  bronchial:   5.0,
+  unknown:     0.0,
+};
 
 const model = genAI.getGenerativeModel({
   model: 'gemini-2.5-flash',
@@ -128,6 +162,39 @@ export async function analyzeFrame(base64Image, mimeType = 'image/jpeg') {
           glottis: { visible: extractBool(/"glottis"[\s\S]*?"visible"\s*:\s*(true|false)/), confidence: 0 },
         },
       };
+    }
+
+    // Safety net: if no airway visible, blank all airway landmarks (but keep esophagus)
+    if (data.image_quality === 'no_airway_visible') {
+      const esophagusResult = data.landmarks?.esophagus;
+      const blank = { visible: false, confidence: 0 };
+      data.landmarks = {
+        epiglottis: blank, vocal_cords: blank, tracheal_rings: blank,
+        carina: blank, glottis: blank,
+        esophagus: esophagusResult || blank,
+      };
+      data.depth_zone = 'unknown';
+      data.safety_status = 'safe';
+      data.estimated_depth_cm = 0;
+    }
+
+    // Filter out very low-confidence detections (< 0.3) to reduce hallucinations
+    if (data.landmarks) {
+      for (const key of Object.keys(data.landmarks)) {
+        if (data.landmarks[key].confidence < 0.3) {
+          data.landmarks[key].visible = false;
+        }
+      }
+    }
+
+    // Override estimated_depth_cm with zone-derived value — Gemini's guesses are unreliable
+    data.estimated_depth_cm = ZONE_DEPTH_CM[data.depth_zone] ?? 0;
+
+    // Esophagus danger escalation — applies regardless of image_quality
+    if (data.landmarks?.esophagus?.visible) {
+      data.safety_status = 'danger';
+      data.guidance_message = 'ESOPHAGEAL INTUBATION DETECTED — withdraw tube immediately and reposition.';
+      data.depth_zone = 'unknown';
     }
 
     return {

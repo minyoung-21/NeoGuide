@@ -16,6 +16,20 @@ import { analyzeFrame, captureFrame } from '../services/geminiVision';
 import { speakAlert, speakCustom, determineAlert, preloadAlerts, ALERT_DEFINITIONS } from '../services/voiceAlerts';
 
 // ═══════════════════════════════════════
+// STABLE STATE HELPER
+// Majority vote over the last N results to suppress hallucination flip-flops
+// ═══════════════════════════════════════
+function getMajority(arr, key) {
+  if (!arr.length) return null;
+  const counts = {};
+  for (const item of arr) {
+    const v = item?.[key];
+    if (v != null) counts[v] = (counts[v] || 0) + 1;
+  }
+  return Object.entries(counts).sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
+}
+
+// ═══════════════════════════════════════
 // DEPTH ZONE CONFIGURATION
 // ═══════════════════════════════════════
 const DEPTH_ZONES = [
@@ -37,61 +51,23 @@ export default function Dashboard() {
   // ═══════════════════════════════════════
   // STATE
   // ═══════════════════════════════════════
-  const { videoRef, isActive, error: camError, devices, startCamera, stopCamera } = useWebcam();
-  const [analysis, setAnalysis] = useState(null);
+  const { videoRef, isActive, startCamera, stopCamera } = useWebcam();
+  const [analysis, setAnalysis] = useState(null);       // raw latest result (for landmarks)
+  const [stableAnalysis, setStableAnalysis] = useState(null); // majority-voted (for status/depth)
   const [eventLog, setEventLog] = useState([]);
-  const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [analysisInterval, setAnalysisInterval] = useState(null);
   const [voiceEnabled, setVoiceEnabled] = useState(true);
-  const [voiceStatus, setVoiceStatus] = useState('idle');
-  const [alertsPreloaded, setAlertsPreloaded] = useState(false);
   const [fps, setFps] = useState(0);
   const [vitals, setVitals] = useState({ spo2: 94, heartRate: 142, respRate: 48 });
-  const analysisRef = useRef(null);
 
-  // ═══════════════════════════════════════
-  // ANALYSIS LOOP
-  // ═══════════════════════════════════════
-  const runAnalysis = useCallback(async () => {
-    if (!videoRef.current || !isActive || isAnalyzing) return;
+  // Refs that survive renders without triggering re-renders
+  const isAnalyzingRef = useRef(false);       // gate: prevent overlapping calls
+  const historyRef    = useRef([]);           // rolling window of last 3 results
+  const stableRef     = useRef(null);         // latest stable state (for alert comparison)
+  const lastAlertTs   = useRef(0);            // timestamp of last voice alert
+  const runAnalysisRef = useRef(null);        // always points to latest runAnalysis fn
 
-    setIsAnalyzing(true);
-    const startTime = performance.now();
-
-    try {
-      const { base64, mimeType } = captureFrame(videoRef.current);
-      const result = await analyzeFrame(base64, mimeType);
-
-      const prevResult = analysisRef.current; // capture BEFORE overwriting
-      setAnalysis(result);
-      analysisRef.current = result;
-
-      // Calculate FPS
-      const elapsed = performance.now() - startTime;
-      setFps(Math.round(1000 / elapsed));
-
-      // Determine and trigger voice alerts
-      if (voiceEnabled && result.success) {
-        const alertKey = determineAlert(result, prevResult);
-        if (alertKey) {
-          speakAlert(alertKey);
-          setVoiceStatus(alertKey);
-          addEvent(ALERT_DEFINITIONS[alertKey]?.text || alertKey, result.safety_status);
-        }
-      }
-
-      // Log significant events
-      if (result.success && result.image_quality !== 'no_airway_visible') {
-        if (!prevResult || result.depth_zone !== prevResult.depth_zone) {
-          addEvent(`Depth zone: ${result.depth_zone} (${result.estimated_depth_cm}cm)`, result.safety_status);
-        }
-      }
-    } catch (err) {
-      console.error('Analysis error:', err);
-    }
-
-    setIsAnalyzing(false);
-  }, [isActive, isAnalyzing, voiceEnabled]);
+  const ALERT_COOLDOWN_MS = 1500;
 
   // Add event to log
   const addEvent = useCallback((message, status = 'safe') => {
@@ -100,14 +76,73 @@ export default function Dashboard() {
   }, []);
 
   // ═══════════════════════════════════════
+  // ANALYSIS LOOP
+  // ═══════════════════════════════════════
+  const runAnalysis = useCallback(async () => {
+    if (!videoRef.current || !isActive || isAnalyzingRef.current) return;
+
+    isAnalyzingRef.current = true;
+    const startTime = performance.now();
+
+    try {
+      const { base64, mimeType } = captureFrame(videoRef.current);
+      const result = await analyzeFrame(base64, mimeType);
+
+      // Rolling history: keep last 3 results for majority vote
+      historyRef.current = [...historyRef.current.slice(-2), result];
+      const history = historyRef.current;
+
+      // Stable state via majority vote (suppresses hallucination flip-flops)
+      const stableZone   = getMajority(history, 'depth_zone')   || result.depth_zone;
+      const stableStatus = getMajority(history, 'safety_status') || result.safety_status;
+      const stable = { ...result, depth_zone: stableZone, safety_status: stableStatus };
+
+      const prevStable = stableRef.current;
+      setAnalysis(result);         // raw → landmark grid (fast, always fresh)
+      setStableAnalysis(stable);   // smoothed → status badge + depth gauge
+      stableRef.current = stable;
+
+      // FPS
+      const elapsed = performance.now() - startTime;
+      setFps(Math.round(1000 / elapsed));
+
+      // Voice alerts: only on stable-state transition + cooldown
+      const now = Date.now();
+      if (voiceEnabled && result.success && (now - lastAlertTs.current) >= ALERT_COOLDOWN_MS) {
+        const alertKey = determineAlert(stable, prevStable);
+        if (alertKey) {
+          speakAlert(alertKey);
+          lastAlertTs.current = now;
+          addEvent(ALERT_DEFINITIONS[alertKey]?.text || alertKey, stable.safety_status);
+        }
+      }
+
+      // Log depth zone changes (based on stable state)
+      if (result.success && result.image_quality !== 'no_airway_visible') {
+        if (!prevStable || stable.depth_zone !== prevStable.depth_zone) {
+          addEvent(`Depth zone: ${stable.depth_zone} (${stable.estimated_depth_cm?.toFixed(1)}cm)`, stable.safety_status);
+        }
+      }
+    } catch (err) {
+      console.error('Analysis error:', err);
+    }
+
+    isAnalyzingRef.current = false;
+  }, [isActive, voiceEnabled, addEvent]);
+
+  // Keep runAnalysisRef current so the interval always calls the latest version
+  useEffect(() => { runAnalysisRef.current = runAnalysis; }, [runAnalysis]);
+
+  // ═══════════════════════════════════════
   // CONTROLS
   // ═══════════════════════════════════════
   const startAnalysis = useCallback(() => {
     if (analysisInterval) return;
-    const interval = setInterval(runAnalysis, 3000); // Analyze every 3 seconds
+    // Interval calls via ref — avoids stale closure on runAnalysis
+    const interval = setInterval(() => runAnalysisRef.current?.(), 2000);
     setAnalysisInterval(interval);
     addEvent('NeoGuide analysis started', 'safe');
-  }, [runAnalysis, analysisInterval, addEvent]);
+  }, [analysisInterval, addEvent]);
 
   const stopAnalysis = useCallback(() => {
     if (analysisInterval) {
@@ -119,10 +154,11 @@ export default function Dashboard() {
 
   // Preload voice alerts on mount
   useEffect(() => {
-    preloadAlerts().then(() => setAlertsPreloaded(true)).catch(console.error);
+    preloadAlerts().catch(console.error);
   }, []);
 
-  const currentStatus = analysis?.safety_status || 'safe';
+  // Status driven by stable analysis (not raw) — prevents flicker
+  const currentStatus = stableAnalysis?.safety_status || 'safe';
   const statusConfig = STATUS_CONFIG[currentStatus];
 
   // Animate vitals — values drift based on current safety status
@@ -248,21 +284,25 @@ export default function Dashboard() {
               <span style={styles.panelTitle}>LANDMARK DETECTION</span>
             </div>
             <div style={styles.landmarkGrid}>
-              {analysis?.landmarks && Object.entries(analysis.landmarks).map(([key, value]) => (
+              {analysis?.landmarks && Object.entries(analysis.landmarks).map(([key, value]) => {
+                const isEsophagus = key === 'esophagus';
+                const activeColor = isEsophagus ? '#EF4444' : '#10B981';
+                return (
                 <div key={key} style={{
                   ...styles.landmarkItem,
-                  borderColor: value.visible ? '#10B981' : '#334155',
-                  backgroundColor: value.visible ? 'rgba(16,185,129,0.1)' : 'transparent',
+                  borderColor: value.visible ? activeColor : '#334155',
+                  backgroundColor: value.visible ? (isEsophagus ? 'rgba(239,68,68,0.12)' : 'rgba(16,185,129,0.1)') : 'transparent',
                 }}>
-                  <span style={styles.landmarkName}>{key.replace(/_/g, ' ')}</span>
+                  <span style={styles.landmarkName}>{key.replace(/_/g, ' ')}{isEsophagus && value.visible ? ' ⚠' : ''}</span>
                   <span style={{
                     ...styles.landmarkStatus,
-                    color: value.visible ? '#10B981' : '#64748B',
+                    color: value.visible ? activeColor : '#64748B',
                   }}>
                     {value.visible ? `✓ ${Math.round(value.confidence * 100)}%` : '—'}
                   </span>
                 </div>
-              ))}
+                );
+              })}
             </div>
           </div>
         </div>
@@ -276,7 +316,7 @@ export default function Dashboard() {
             </div>
             <div style={styles.depthGauge}>
               {DEPTH_ZONES.map((zone) => {
-                const isCurrentZone = analysis?.depth_zone === zone.id;
+                const isCurrentZone = stableAnalysis?.depth_zone === zone.id;
                 return (
                   <div
                     key={zone.id}
@@ -306,7 +346,7 @@ export default function Dashboard() {
               <div style={styles.depthReadout}>
                 <span style={{ color: '#94A3B8', fontSize: 12, fontFamily: 'JetBrains Mono' }}>EST. DEPTH</span>
                 <span style={{ color: '#FFFFFF', fontSize: 32, fontWeight: 700, fontFamily: 'JetBrains Mono' }}>
-                  {analysis?.estimated_depth_cm?.toFixed(1) || '0.0'}
+                  {stableAnalysis?.estimated_depth_cm?.toFixed(1) || '0.0'}
                   <span style={{ fontSize: 16, color: '#64748B' }}> cm</span>
                 </span>
               </div>
@@ -381,6 +421,11 @@ export default function Dashboard() {
               <span style={styles.panelIcon}>💬</span>
               <span style={styles.panelTitle}>AI GUIDANCE</span>
             </div>
+            {analysis?.image_quality === 'no_airway_visible' && analysis?.identified_as && (
+              <p style={{ color: '#F59E0B', fontSize: 12, fontFamily: 'JetBrains Mono', marginBottom: 8 }}>
+                DETECTED: {analysis.identified_as}
+              </p>
+            )}
             <p style={{ color: '#E2E8F0', fontSize: 15, lineHeight: 1.5, margin: 0 }}>
               {analysis?.guidance_message || 'Awaiting camera feed and analysis...'}
             </p>
