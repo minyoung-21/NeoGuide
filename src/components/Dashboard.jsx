@@ -122,6 +122,9 @@ export default function Dashboard() {
     preloadAlerts().then(() => setAlertsPreloaded(true)).catch(console.error);
   }, []);
 
+  const currentStatus = analysis?.safety_status || 'safe';
+  const statusConfig = STATUS_CONFIG[currentStatus];
+
   // Animate vitals — values drift based on current safety status
   useEffect(() => {
     const id = setInterval(() => {
@@ -147,9 +150,6 @@ export default function Dashboard() {
       if (analysisInterval) clearInterval(analysisInterval);
     };
   }, [analysisInterval]);
-
-  const currentStatus = analysis?.safety_status || 'safe';
-  const statusConfig = STATUS_CONFIG[currentStatus];
 
   // ═══════════════════════════════════════
   // RENDER
