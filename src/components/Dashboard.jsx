@@ -565,9 +565,9 @@ const styles = {
     flex: 1,
     minHeight: 0,
   },
-  leftCol: { display: 'flex', flexDirection: 'column', gap: 16 },
-  centerCol: { display: 'flex', flexDirection: 'column', gap: 16 },
-  rightCol: { display: 'flex', flexDirection: 'column', gap: 16 },
+  leftCol: { display: 'flex', flexDirection: 'column', gap: 16, minHeight: 0, overflowY: 'auto' },
+  centerCol: { display: 'flex', flexDirection: 'column', gap: 16, minHeight: 0, overflowY: 'auto' },
+  rightCol: { display: 'flex', flexDirection: 'column', gap: 16, minHeight: 0, overflow: 'hidden' },
 
   panel: {
     backgroundColor: '#0F172A',
