@@ -16,6 +16,9 @@ const audioQueue = [];
 // Cache for pre-generated alerts
 const audioCache = new Map();
 
+// Reference to currently playing audio element (for interruption)
+let currentAudio = null;
+
 // Alert definitions with priority levels
 const ALERT_DEFINITIONS = {
   // Landmark detections
@@ -35,7 +38,7 @@ const ALERT_DEFINITIONS = {
     text: 'Tracheal rings visible. Tube in trachea.',
     priority: 1,
   },
-  
+
   // Depth zone alerts
   optimal_depth: {
     text: 'Optimal depth reached. Safe to secure tube.',
@@ -49,7 +52,7 @@ const ALERT_DEFINITIONS = {
     text: 'Danger. Bronchial intubation detected. Withdraw immediately.',
     priority: 5,
   },
-  
+
   // Safety alerts
   esophageal_warning: {
     text: 'Warning. Possible esophageal intubation. Verify placement.',
@@ -59,7 +62,7 @@ const ALERT_DEFINITIONS = {
     text: 'Poor image quality. Reposition camera.',
     priority: 1,
   },
-  
+
   // Status
   system_ready: {
     text: 'NeoGuide active. Camera feed detected.',
@@ -108,23 +111,74 @@ async function generateSpeech(text) {
  * @param {ArrayBuffer} audioData
  */
 function playAudio(audioData) {
+  // Stop whatever is currently playing before starting new audio
+  if (currentAudio) {
+    currentAudio.pause();
+    currentAudio = null;
+  }
+
   return new Promise((resolve, reject) => {
     const blob = new Blob([audioData], { type: 'audio/mpeg' });
     const url = URL.createObjectURL(blob);
     const audio = new Audio(url);
     audio.playbackRate = 0.75;
+    currentAudio = audio;
 
     audio.onended = () => {
       URL.revokeObjectURL(url);
+      if (currentAudio === audio) currentAudio = null;
       resolve();
     };
     audio.onerror = (e) => {
       URL.revokeObjectURL(url);
+      if (currentAudio === audio) currentAudio = null;
       reject(e);
     };
-    
+
     audio.play().catch(reject);
   });
+}
+
+/**
+ * Immediately interrupt any current audio and speak an urgent alert.
+ * Use for critical danger events (esophageal intubation, bronchial) where
+ * every second counts — bypasses the queue entirely.
+ * @param {string} alertKey - Key from ALERT_DEFINITIONS
+ */
+export async function speakUrgent(alertKey) {
+  const alert = ALERT_DEFINITIONS[alertKey];
+  if (!alert) return;
+
+  // Seize control: clear queue and block normal playback immediately
+  audioQueue.length = 0;
+  isPlaying = true;
+
+  // Stop current audio right away
+  if (currentAudio) {
+    currentAudio.pause();
+    currentAudio = null;
+  }
+
+  let audioData = audioCache.get(alert.text);
+  if (!audioData) {
+    try {
+      audioData = await generateSpeech(alert.text);
+      audioCache.set(alert.text, audioData);
+    } catch (e) {
+      console.error('Urgent alert generation failed:', e);
+      isPlaying = false;
+      return;
+    }
+  }
+
+  try {
+    await playAudio(audioData);
+  } catch (e) {
+    console.error('Urgent alert playback failed:', e);
+  }
+
+  isPlaying = false;
+  processQueue();
 }
 
 /**
@@ -132,17 +186,17 @@ function playAudio(audioData) {
  */
 async function processQueue() {
   if (isPlaying || audioQueue.length === 0) return;
-  
+
   isPlaying = true;
-  
+
   // Sort by priority (higher = more urgent)
   audioQueue.sort((a, b) => b.priority - a.priority);
-  
+
   const item = audioQueue.shift();
-  
+
   try {
     let audioData;
-    
+
     // Check cache first
     if (audioCache.has(item.text)) {
       audioData = audioCache.get(item.text);
@@ -150,12 +204,12 @@ async function processQueue() {
       audioData = await generateSpeech(item.text);
       audioCache.set(item.text, audioData);
     }
-    
+
     await playAudio(audioData);
   } catch (error) {
     console.error('Voice alert error:', error);
   }
-  
+
   isPlaying = false;
   processQueue(); // Process next in queue
 }
@@ -170,7 +224,7 @@ export function speakAlert(alertKey) {
     console.warn(`Unknown alert key: ${alertKey}`);
     return;
   }
-  
+
   audioQueue.push({ text: alert.text, priority: alert.priority });
   processQueue();
 }
@@ -195,11 +249,12 @@ export async function preloadAlerts() {
     'optimal_depth',
     'warning_deep',
     'danger_bronchial',
+    'esophageal_warning',  // must be pre-cached for instant interrupt playback
     'system_ready',
   ];
-  
+
   console.log('Pre-loading critical voice alerts...');
-  
+
   for (const key of criticalAlerts) {
     try {
       const alert = ALERT_DEFINITIONS[key];
@@ -210,7 +265,7 @@ export async function preloadAlerts() {
       console.error(`Failed to cache ${key}:`, error);
     }
   }
-  
+
   console.log('Voice alerts pre-loaded!');
 }
 
@@ -222,49 +277,49 @@ export async function preloadAlerts() {
  */
 export function determineAlert(currentAnalysis, previousAnalysis) {
   if (!currentAnalysis.success) return null;
-  
+
   const curr = currentAnalysis;
   const prev = previousAnalysis;
-  
-  // Priority 1: Danger alerts
+
+  // Priority 1: Danger alerts — only on transition to avoid repeat spam
   if (curr.safety_status === 'danger') {
-    if (curr.depth_zone === 'bronchial') return 'danger_bronchial';
-    if (curr.landmarks.esophagus?.visible) return 'esophageal_warning';
+    if (curr.depth_zone === 'bronchial' && prev?.depth_zone !== 'bronchial') return 'danger_bronchial';
+    if (curr.landmarks.esophagus?.visible && !prev?.landmarks?.esophagus?.visible) return 'esophageal_warning';
   }
-  
+
   // Priority 2: Warning alerts
   if (curr.safety_status === 'warning' && prev?.safety_status !== 'warning') {
     return 'warning_deep';
   }
-  
+
   // Priority 3: Positive confirmations (only on transitions)
   if (prev) {
     // Vocal cords just became visible
     if (curr.landmarks.vocal_cords?.visible && !prev.landmarks?.vocal_cords?.visible) {
       return 'vocal_cords_detected';
     }
-    
+
     // Epiglottis just became visible
     if (curr.landmarks.epiglottis?.visible && !prev.landmarks?.epiglottis?.visible) {
       return 'epiglottis_detected';
     }
-    
+
     // Entered trachea
     if (curr.depth_zone === 'tracheal' && prev.depth_zone !== 'tracheal') {
       return 'optimal_depth';
     }
-    
+
     // Entered subglottic from glottic
     if (curr.depth_zone === 'subglottic' && prev.depth_zone === 'glottic') {
       return 'entering_trachea';
     }
   }
-  
+
   // Image quality warning
   if (curr.image_quality === 'poor' && prev?.image_quality !== 'poor') {
     return 'poor_image';
   }
-  
+
   return null;
 }
 

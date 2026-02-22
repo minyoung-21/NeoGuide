@@ -13,7 +13,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useWebcam } from '../hooks/useWebcam';
 import { analyzeFrame, captureFrame } from '../services/geminiVision';
-import { speakAlert, speakCustom, determineAlert, preloadAlerts, ALERT_DEFINITIONS } from '../services/voiceAlerts';
+import { speakAlert, speakUrgent, speakCustom, determineAlert, preloadAlerts, ALERT_DEFINITIONS } from '../services/voiceAlerts';
 
 // ═══════════════════════════════════════
 // STABLE STATE HELPER
@@ -192,9 +192,10 @@ export default function Dashboard() {
           });
         }
 
-        // First-time esophagus detection — immediate prominent alert
+        // First-time esophagus detection — interrupt everything and play immediately
         if (result.landmarks?.esophagus?.visible && !seenLandmarksRef.current.has('esophagus')) {
           seenLandmarksRef.current.add('esophagus');
+          speakUrgent('esophageal_warning'); // bypasses queue, plays instantly
           addEvent({ type: 'alert', title: 'ESOPHAGEAL INTUBATION', detail: 'Withdraw tube immediately — reposition', status: 'danger' });
         }
       }
