@@ -13,7 +13,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useWebcam } from '../hooks/useWebcam';
 import { analyzeFrame, captureFrame } from '../services/geminiVision';
-import { speakAlert, speakUrgent, speakCustom, determineAlert, preloadAlerts, ALERT_DEFINITIONS } from '../services/voiceAlerts';
+import { speakAlert, speakUrgent, speakCustom, stopAllAudio, determineAlert, preloadAlerts, ALERT_DEFINITIONS } from '../services/voiceAlerts';
 
 // ═══════════════════════════════════════
 // STABLE STATE HELPER
@@ -191,13 +191,14 @@ export default function Dashboard() {
             zoneId: stable.depth_zone,
           });
         }
+      }
 
-        // First-time esophagus detection — interrupt everything and play immediately
-        if (result.landmarks?.esophagus?.visible && !seenLandmarksRef.current.has('esophagus')) {
-          seenLandmarksRef.current.add('esophagus');
-          speakUrgent('esophageal_warning'); // bypasses queue, plays instantly
-          addEvent({ type: 'alert', title: 'ESOPHAGEAL INTUBATION', detail: 'Withdraw tube immediately — reposition', status: 'danger' });
-        }
+      // Esophagus check runs regardless of image_quality — Gemini often labels
+      // esophageal views as 'no_airway_visible', so we can't gate on that field.
+      if (result.success && result.landmarks?.esophagus?.visible && !seenLandmarksRef.current.has('esophagus')) {
+        seenLandmarksRef.current.add('esophagus');
+        speakUrgent('esophageal_warning'); // bypasses queue, plays instantly
+        addEvent({ type: 'alert', title: 'ESOPHAGEAL INTUBATION', detail: 'Withdraw tube immediately — reposition', status: 'danger' });
       }
     } catch (err) {
       console.error('Analysis error:', err);
@@ -226,6 +227,7 @@ export default function Dashboard() {
       clearInterval(analysisInterval);
       setAnalysisInterval(null);
     }
+    stopAllAudio(); // clear queue + stop any in-flight audio immediately
     addEvent({ type: 'session', title: 'Monitoring Paused', detail: null, status: 'safe' });
   }, [analysisInterval, addEvent]);
 

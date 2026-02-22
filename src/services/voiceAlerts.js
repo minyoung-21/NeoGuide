@@ -323,4 +323,17 @@ export function determineAlert(currentAnalysis, previousAnalysis) {
   return null;
 }
 
+/**
+ * Stop all audio immediately and clear the queue.
+ * Call this when analysis is paused/stopped.
+ */
+export function stopAllAudio() {
+  audioQueue.length = 0;
+  if (currentAudio) {
+    currentAudio.pause();
+    currentAudio = null;
+  }
+  isPlaying = false;
+}
+
 export { ALERT_DEFINITIONS };
