@@ -47,6 +47,52 @@ const STATUS_CONFIG = {
   danger: { color: '#EF4444', label: 'DANGER', glow: '0 0 20px rgba(239,68,68,0.5)' },
 };
 
+// ═══════════════════════════════════════
+// EVENT LOG CONFIGURATION
+// ═══════════════════════════════════════
+const ZONE_LABELS = {
+  pre_glottic: 'Pre-Glottic', glottic: 'Glottic', subglottic: 'Sub-Glottic',
+  tracheal: 'Tracheal', carinal: 'Carinal', bronchial: 'Bronchial', unknown: 'Unknown',
+};
+
+const ZONE_COLOR = {
+  pre_glottic: '#06B6D4', glottic: '#10B981', subglottic: '#10B981',
+  tracheal: '#22C55E', carinal: '#F59E0B', bronchial: '#EF4444', unknown: '#64748B',
+};
+
+const LANDMARK_LABELS = {
+  epiglottis: 'Epiglottis', vocal_cords: 'Vocal Cords', glottis: 'Glottis',
+  tracheal_rings: 'Tracheal Rings', carina: 'Carina', esophagus: 'Esophagus',
+};
+
+// Maps voice alert keys → richer clinical log entries
+const ALERT_EVENT_MAP = {
+  epiglottis_detected: { type: 'landmark', title: 'Epiglottis Detected', detail: 'Advancing toward vocal cords' },
+  vocal_cords_detected: { type: 'landmark', title: 'Vocal Cords Detected', detail: 'Align tube for insertion now' },
+  entering_trachea: { type: 'zone', title: 'Entering Trachea', detail: 'Tube passing through vocal cords', zoneId: 'subglottic' },
+  tracheal_rings_visible: { type: 'landmark', title: 'Tracheal Rings Visible', detail: 'Tube confirmed in trachea' },
+  optimal_depth: { type: 'zone', title: 'Optimal Depth Reached', detail: 'Safe to secure the tube', zoneId: 'tracheal' },
+  warning_deep: { type: 'alert', title: 'Approaching Carina', detail: 'Stop advancing — bronchial intubation risk' },
+  danger_bronchial: { type: 'alert', title: 'BRONCHIAL INTUBATION', detail: 'Withdraw tube immediately' },
+  esophageal_warning: { type: 'alert', title: 'ESOPHAGEAL INTUBATION', detail: 'Withdraw and reposition airway' },
+  poor_image: { type: 'session', title: 'Poor Image Quality', detail: 'Reposition scope for better view' },
+  system_ready: { type: 'session', title: 'System Ready', detail: 'Camera feed confirmed' },
+  placement_confirmed: { type: 'zone', title: 'Placement Confirmed', detail: 'Tube in trachea — monitoring active', zoneId: 'tracheal' },
+};
+
+const EVENT_TYPE_CONFIG = {
+  session: { icon: '◆', defaultColor: '#64748B' },
+  zone: { icon: '→', defaultColor: '#06B6D4' },
+  alert: { icon: '⚠', defaultColor: '#EF4444' },
+  landmark: { icon: '◉', defaultColor: '#06B6D4' },
+};
+
+function getElapsed(startTime) {
+  if (!startTime) return null;
+  const s = Math.floor((Date.now() - startTime) / 1000);
+  return `+${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
+}
+
 export default function Dashboard() {
   // ═══════════════════════════════════════
   // STATE
@@ -60,18 +106,25 @@ export default function Dashboard() {
   const [fps, setFps] = useState(0);
 
   // Refs that survive renders without triggering re-renders
-  const isAnalyzingRef = useRef(false);       // gate: prevent overlapping calls
-  const historyRef    = useRef([]);           // rolling window of last 3 results
-  const stableRef     = useRef(null);         // latest stable state (for alert comparison)
-  const lastAlertTs   = useRef(0);            // timestamp of last voice alert
-  const runAnalysisRef = useRef(null);        // always points to latest runAnalysis fn
+  const isAnalyzingRef = useRef(false);    // gate: prevent overlapping calls
+  const historyRef = useRef([]);       // rolling window of last 3 results
+  const stableRef = useRef(null);     // latest stable state (for alert comparison)
+  const lastAlertTs = useRef(0);        // timestamp of last voice alert
+  const runAnalysisRef = useRef(null);     // always points to latest runAnalysis fn
+  const procedureStartRef = useRef(null);     // timestamp when monitoring started (for elapsed)
+  const seenLandmarksRef = useRef(new Set()); // tracks first-time landmark detections
 
   const ALERT_COOLDOWN_MS = 1500;
 
-  // Add event to log
-  const addEvent = useCallback((message, status = 'safe') => {
+  // Add event to log — accepts either a rich object or a legacy (message, status) string
+  const addEvent = useCallback((eventOrMessage, status = 'safe') => {
     const time = new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
-    setEventLog(prev => [{ time, message, status }, ...prev].slice(0, 50));
+    const elapsed = procedureStartRef.current ? getElapsed(procedureStartRef.current) : null;
+    if (typeof eventOrMessage === 'string') {
+      setEventLog(prev => [{ time, elapsed, type: 'session', title: eventOrMessage, detail: null, status }, ...prev].slice(0, 50));
+    } else {
+      setEventLog(prev => [{ time, elapsed, ...eventOrMessage }, ...prev].slice(0, 50));
+    }
   }, []);
 
   // ═══════════════════════════════════════
@@ -92,7 +145,7 @@ export default function Dashboard() {
       const history = historyRef.current;
 
       // Stable state via majority vote (suppresses hallucination flip-flops)
-      const stableZone   = getMajority(history, 'depth_zone')   || result.depth_zone;
+      const stableZone = getMajority(history, 'depth_zone') || result.depth_zone;
       const stableStatus = getMajority(history, 'safety_status') || result.safety_status;
       const stable = { ...result, depth_zone: stableZone, safety_status: stableStatus };
 
@@ -112,14 +165,37 @@ export default function Dashboard() {
         if (alertKey) {
           speakAlert(alertKey);
           lastAlertTs.current = now;
-          addEvent(ALERT_DEFINITIONS[alertKey]?.text || alertKey, stable.safety_status);
+          const alertEvent = ALERT_EVENT_MAP[alertKey];
+          if (alertEvent) {
+            addEvent({ ...alertEvent, status: alertEvent.status || stable.safety_status });
+          } else {
+            addEvent({ type: 'session', title: ALERT_DEFINITIONS[alertKey]?.text || alertKey, detail: null, status: stable.safety_status });
+          }
         }
       }
 
-      // Log depth zone changes (based on stable state)
+      // Log depth zone changes with visible landmarks in the detail line
       if (result.success && result.image_quality !== 'no_airway_visible') {
         if (!prevStable || stable.depth_zone !== prevStable.depth_zone) {
-          addEvent(`Depth zone: ${stable.depth_zone} (${stable.estimated_depth_cm?.toFixed(1)}cm)`, stable.safety_status);
+          const visibleLandmarks = Object.entries(result.landmarks || {})
+            .filter(([k, v]) => v.visible && k !== 'esophagus')
+            .map(([k, v]) => `${LANDMARK_LABELS[k] || k} ${Math.round(v.confidence * 100)}%`)
+            .join(' · ');
+          addEvent({
+            type: 'zone',
+            title: `→ ${ZONE_LABELS[stable.depth_zone] || stable.depth_zone} Zone`,
+            detail: visibleLandmarks
+              ? `${visibleLandmarks} · ${stable.estimated_depth_cm?.toFixed(1)} cm`
+              : `Est. depth: ${stable.estimated_depth_cm?.toFixed(1)} cm`,
+            status: stable.safety_status,
+            zoneId: stable.depth_zone,
+          });
+        }
+
+        // First-time esophagus detection — immediate prominent alert
+        if (result.landmarks?.esophagus?.visible && !seenLandmarksRef.current.has('esophagus')) {
+          seenLandmarksRef.current.add('esophagus');
+          addEvent({ type: 'alert', title: 'ESOPHAGEAL INTUBATION', detail: 'Withdraw tube immediately — reposition', status: 'danger' });
         }
       }
     } catch (err) {
@@ -137,10 +213,11 @@ export default function Dashboard() {
   // ═══════════════════════════════════════
   const startAnalysis = useCallback(() => {
     if (analysisInterval) return;
-    // Interval calls via ref — avoids stale closure on runAnalysis
+    procedureStartRef.current = Date.now();
+    seenLandmarksRef.current = new Set();
     const interval = setInterval(() => runAnalysisRef.current?.(), 2000);
     setAnalysisInterval(interval);
-    addEvent('NeoGuide analysis started', 'safe');
+    addEvent({ type: 'session', title: 'Monitoring Active', detail: 'NeoGuide AI analysis started', status: 'safe' });
   }, [analysisInterval, addEvent]);
 
   const stopAnalysis = useCallback(() => {
@@ -148,7 +225,7 @@ export default function Dashboard() {
       clearInterval(analysisInterval);
       setAnalysisInterval(null);
     }
-    addEvent('Analysis paused', 'safe');
+    addEvent({ type: 'session', title: 'Monitoring Paused', detail: null, status: 'safe' });
   }, [analysisInterval, addEvent]);
 
   // Preload voice alerts on mount
@@ -268,19 +345,19 @@ export default function Dashboard() {
                 const isEsophagus = key === 'esophagus';
                 const activeColor = isEsophagus ? '#EF4444' : '#10B981';
                 return (
-                <div key={key} style={{
-                  ...styles.landmarkItem,
-                  borderColor: value.visible ? activeColor : '#334155',
-                  backgroundColor: value.visible ? (isEsophagus ? 'rgba(239,68,68,0.12)' : 'rgba(16,185,129,0.1)') : 'transparent',
-                }}>
-                  <span style={styles.landmarkName}>{key.replace(/_/g, ' ')}{isEsophagus && value.visible ? ' ⚠' : ''}</span>
-                  <span style={{
-                    ...styles.landmarkStatus,
-                    color: value.visible ? activeColor : '#64748B',
+                  <div key={key} style={{
+                    ...styles.landmarkItem,
+                    borderColor: value.visible ? activeColor : '#334155',
+                    backgroundColor: value.visible ? (isEsophagus ? 'rgba(239,68,68,0.12)' : 'rgba(16,185,129,0.1)') : 'transparent',
                   }}>
-                    {value.visible ? `✓ ${Math.round(value.confidence * 100)}%` : '—'}
-                  </span>
-                </div>
+                    <span style={styles.landmarkName}>{key.replace(/_/g, ' ')}{isEsophagus && value.visible ? ' ⚠' : ''}</span>
+                    <span style={{
+                      ...styles.landmarkStatus,
+                      color: value.visible ? activeColor : '#64748B',
+                    }}>
+                      {value.visible ? `✓ ${Math.round(value.confidence * 100)}%` : '—'}
+                    </span>
+                  </div>
                 );
               })}
             </div>
@@ -321,7 +398,7 @@ export default function Dashboard() {
                   </div>
                 );
               })}
-              
+
               {/* Depth readout */}
               <div style={styles.depthReadout}>
                 <span style={{ color: '#94A3B8', fontSize: 12, fontFamily: 'JetBrains Mono' }}>EST. DEPTH</span>
@@ -340,24 +417,69 @@ export default function Dashboard() {
           <div style={{ ...styles.panel, flex: 1, display: 'flex', flexDirection: 'column' }}>
             <div style={styles.panelHeader}>
               <span style={styles.panelIcon}>📋</span>
-              <span style={styles.panelTitle}>EVENT LOG</span>
-              <span style={{ color: '#64748B', fontSize: 12, fontFamily: 'JetBrains Mono' }}>{eventLog.length} events</span>
+              <span style={styles.panelTitle}>PROCEDURE LOG</span>
+              {eventLog.length > 0 && (
+                <span style={{ color: '#475569', fontSize: 10, fontFamily: 'JetBrains Mono', backgroundColor: '#1E293B', padding: '2px 7px', borderRadius: 4 }}>
+                  {eventLog.length}
+                </span>
+              )}
             </div>
             <div style={styles.eventLog}>
               {eventLog.length === 0 ? (
-                <p style={{ color: '#64748B', textAlign: 'center', marginTop: 40 }}>
-                  Start camera and analysis to see events
+                <p style={{ color: '#475569', textAlign: 'center', marginTop: 40, fontFamily: 'JetBrains Mono', fontSize: 12, lineHeight: 1.6 }}>
+                  Start camera and analysis<br />to see procedure events
                 </p>
               ) : (
-                eventLog.map((event, i) => (
-                  <div key={i} style={{
-                    ...styles.eventItem,
-                    borderLeftColor: STATUS_CONFIG[event.status]?.color || '#64748B',
-                  }}>
-                    <span style={styles.eventTime}>{event.time}</span>
-                    <span style={styles.eventMessage}>{event.message}</span>
-                  </div>
-                ))
+                eventLog.map((event, i) => {
+                  const typeConfig = EVENT_TYPE_CONFIG[event.type] || EVENT_TYPE_CONFIG.session;
+                  const isAlert = event.type === 'alert';
+                  const isSession = event.type === 'session';
+                  const borderColor = event.type === 'zone'
+                    ? (ZONE_COLOR[event.zoneId] || STATUS_CONFIG[event.status]?.color || typeConfig.defaultColor)
+                    : (STATUS_CONFIG[event.status]?.color || typeConfig.defaultColor);
+                  return (
+                    <div key={i} style={{
+                      ...styles.eventItem,
+                      borderLeftColor: borderColor,
+                      backgroundColor: isAlert ? 'rgba(239,68,68,0.08)' : 'rgba(15,23,42,0.5)',
+                    }}>
+                      {/* Title row */}
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                          <span style={{ color: borderColor, fontSize: 10, lineHeight: 1, flexShrink: 0 }}>{typeConfig.icon}</span>
+                          <span style={{
+                            color: isAlert ? '#FCA5A5' : isSession ? '#64748B' : '#E2E8F0',
+                            fontSize: 12,
+                            fontWeight: isSession ? 400 : 600,
+                            fontFamily: 'JetBrains Mono',
+                            letterSpacing: isAlert ? '0.04em' : 0,
+                          }}>
+                            {event.title}
+                          </span>
+                        </div>
+                        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 1, flexShrink: 0, marginLeft: 8 }}>
+                          {event.elapsed && (
+                            <span style={{ color: '#334155', fontSize: 9, fontFamily: 'JetBrains Mono' }}>{event.elapsed}</span>
+                          )}
+                          <span style={{ color: '#475569', fontSize: 10, fontFamily: 'JetBrains Mono' }}>{event.time}</span>
+                        </div>
+                      </div>
+                      {/* Detail row */}
+                      {event.detail && (
+                        <div style={{
+                          color: isAlert ? '#FCA5A5' : '#475569',
+                          fontSize: 11,
+                          fontFamily: 'JetBrains Mono',
+                          marginTop: 3,
+                          paddingLeft: 16,
+                          lineHeight: 1.4,
+                        }}>
+                          {event.detail}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })
               )}
             </div>
           </div>
@@ -541,12 +663,9 @@ const styles = {
     paddingRight: 4,
   },
   eventItem: {
-    padding: '6px 10px', borderLeft: '3px solid',
-    backgroundColor: 'rgba(15,23,42,0.5)', borderRadius: '0 6px 6px 0',
-    display: 'flex', gap: 8, alignItems: 'flex-start',
+    padding: '7px 10px', borderLeft: '3px solid',
+    borderRadius: '0 8px 8px 0',
   },
-  eventTime: { color: '#64748B', fontSize: 11, fontFamily: 'JetBrains Mono', whiteSpace: 'nowrap' },
-  eventMessage: { color: '#CBD5E1', fontSize: 12, lineHeight: 1.4 },
 
   footer: {
     display: 'flex', justifyContent: 'space-between',

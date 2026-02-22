@@ -112,7 +112,8 @@ function playAudio(audioData) {
     const blob = new Blob([audioData], { type: 'audio/mpeg' });
     const url = URL.createObjectURL(blob);
     const audio = new Audio(url);
-    
+    audio.playbackRate = 0.75;
+
     audio.onended = () => {
       URL.revokeObjectURL(url);
       resolve();
