@@ -32,13 +32,15 @@ function getMajority(arr, key) {
 // ═══════════════════════════════════════
 // DEPTH ZONE CONFIGURATION
 // ═══════════════════════════════════════
+// Neonatal depth zones — term neonate (~3.5 kg), scope depth relative to vocal cords
+// Ref: Kempley et al., Arch Dis Child 2008; neonatal cords-to-carina ~4 cm
 const DEPTH_ZONES = [
-  { id: 'pre_glottic', label: 'Pre-Glottic', range: '0-1 cm', color: '#06B6D4', bgColor: 'rgba(6,182,212,0.15)' },
-  { id: 'glottic', label: 'Glottic', range: '1-2 cm', color: '#10B981', bgColor: 'rgba(16,185,129,0.15)' },
-  { id: 'subglottic', label: 'Sub-Glottic', range: '2-3 cm', color: '#10B981', bgColor: 'rgba(16,185,129,0.15)' },
-  { id: 'tracheal', label: 'Tracheal', range: '3-5 cm', color: '#22C55E', bgColor: 'rgba(34,197,94,0.2)' },
-  { id: 'carinal', label: 'Carinal', range: '5-6 cm', color: '#F59E0B', bgColor: 'rgba(245,158,11,0.15)' },
-  { id: 'bronchial', label: 'Bronchial', range: '6+ cm', color: '#EF4444', bgColor: 'rgba(239,68,68,0.15)' },
+  { id: 'pre_glottic', label: 'Pre-Glottic', range: '0 cm', color: '#06B6D4', bgColor: 'rgba(6,182,212,0.15)' },
+  { id: 'glottic', label: 'Glottic', range: '~0.2 cm', color: '#10B981', bgColor: 'rgba(16,185,129,0.15)' },
+  { id: 'subglottic', label: 'Sub-Glottic', range: '0.5–1.5 cm', color: '#10B981', bgColor: 'rgba(16,185,129,0.15)' },
+  { id: 'tracheal', label: 'Tracheal', range: '1.5–3 cm', color: '#22C55E', bgColor: 'rgba(34,197,94,0.2)' },
+  { id: 'carinal', label: 'Carinal', range: '3–4 cm', color: '#F59E0B', bgColor: 'rgba(245,158,11,0.15)' },
+  { id: 'bronchial', label: 'Bronchial', range: '>4 cm', color: '#EF4444', bgColor: 'rgba(239,68,68,0.15)' },
 ];
 
 const STATUS_CONFIG = {
@@ -524,7 +526,8 @@ export default function Dashboard() {
 // ═══════════════════════════════════════
 const styles = {
   container: {
-    minHeight: '100vh',
+    height: '100vh',
+    overflow: 'hidden',
     backgroundColor: '#0A0F1C',
     color: '#E2E8F0',
     fontFamily: "'Plus Jakarta Sans', sans-serif",

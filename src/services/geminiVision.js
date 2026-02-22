@@ -62,14 +62,16 @@ Schema:
   "image_quality": "good" | "fair" | "poor" | "no_airway_visible"
 }`;
 
-// Derived depth values per zone — more reliable than Gemini's guesses
+// Scope position relative to vocal cords — neonatal reference values
+// Term neonate (~3.5 kg): cords-to-carina ~4 cm; optimal ETT tip ~2 cm below cords
+// Ref: Kempley et al., Arch Dis Child Fetal Neonatal Ed 2008; Donn & Sinha, Manual of Neonatal Respiratory Care
 const ZONE_DEPTH_CM = {
-  pre_glottic: 0.0,
-  glottic:     0.5,
-  subglottic:  1.0,
-  tracheal:    2.0,
-  carinal:     3.5,
-  bronchial:   5.0,
+  pre_glottic: 0.0,   // above cords, approaching
+  glottic:     0.2,   // at cord level (neonatal glottis ~0.2 cm span)
+  subglottic:  0.8,   // just below cords, upper trachea (0.5–1.5 cm)
+  tracheal:    2.0,   // mid-trachea — optimal ETT tip for term neonate
+  carinal:     3.5,   // near carina (~4 cm below cords in term neonate)
+  bronchial:   4.5,   // past carina, inside bronchus — withdraw immediately
   unknown:     0.0,
 };
 
