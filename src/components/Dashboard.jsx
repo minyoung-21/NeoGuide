@@ -417,7 +417,7 @@ export default function Dashboard() {
 
         {/* RIGHT COLUMN: Event Log */}
         <div style={styles.rightCol}>
-          <div style={{ ...styles.panel, flex: 1, display: 'flex', flexDirection: 'column' }}>
+          <div style={{ ...styles.panel, flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
             <div style={styles.panelHeader}>
               <span style={styles.panelIcon}>📋</span>
               <span style={styles.panelTitle}>PROCEDURE LOG</span>
@@ -662,7 +662,7 @@ const styles = {
   },
 
   eventLog: {
-    maxHeight: 400, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 4,
+    flex: 1, minHeight: 0, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 4,
     paddingRight: 4,
   },
   eventItem: {
