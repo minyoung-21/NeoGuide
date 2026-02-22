@@ -58,7 +58,6 @@ export default function Dashboard() {
   const [analysisInterval, setAnalysisInterval] = useState(null);
   const [voiceEnabled, setVoiceEnabled] = useState(true);
   const [fps, setFps] = useState(0);
-  const [vitals, setVitals] = useState({ spo2: 94, heartRate: 142, respRate: 48 });
 
   // Refs that survive renders without triggering re-renders
   const isAnalyzingRef = useRef(false);       // gate: prevent overlapping calls
@@ -160,25 +159,6 @@ export default function Dashboard() {
   // Status driven by stable analysis (not raw) — prevents flicker
   const currentStatus = stableAnalysis?.safety_status || 'safe';
   const statusConfig = STATUS_CONFIG[currentStatus];
-
-  // Animate vitals — values drift based on current safety status
-  useEffect(() => {
-    const id = setInterval(() => {
-      setVitals(prev => {
-        const danger = currentStatus === 'danger';
-        const warning = currentStatus === 'warning';
-        const spo2Target = danger ? 78 : warning ? 88 : 96;
-        const hrTarget  = danger ? 85 : warning ? 115 : 142;
-        const rrTarget  = danger ? 65 : warning ? 55 : 48;
-        return {
-          spo2:      Math.round(prev.spo2      + (spo2Target - prev.spo2)     * 0.12 + (Math.random() - 0.5) * 1.5),
-          heartRate: Math.round(prev.heartRate + (hrTarget   - prev.heartRate) * 0.1  + (Math.random() - 0.5) * 3),
-          respRate:  Math.round(prev.respRate  + (rrTarget   - prev.respRate)  * 0.1  + (Math.random() - 0.5) * 1),
-        };
-      });
-    }, 900);
-    return () => clearInterval(id);
-  }, [currentStatus]);
 
   // Cleanup interval on unmount
   useEffect(() => {
@@ -353,35 +333,6 @@ export default function Dashboard() {
             </div>
           </div>
 
-          {/* Vitals Panel */}
-          <div style={styles.panel}>
-            <div style={styles.panelHeader}>
-              <span style={styles.panelIcon}>❤️</span>
-              <span style={styles.panelTitle}>VITALS</span>
-            </div>
-            <div style={styles.vitalsGrid}>
-              <div style={styles.vitalItem}>
-                <span style={styles.vitalLabel}>SpO₂</span>
-                <span style={{ ...styles.vitalValue, color: vitals.spo2 >= 90 ? '#10B981' : '#EF4444' }}>
-                  {vitals.spo2}%
-                </span>
-              </div>
-              <div style={styles.vitalItem}>
-                <span style={styles.vitalLabel}>HR</span>
-                <span style={{ ...styles.vitalValue, color: '#06B6D4' }}>
-                  {vitals.heartRate}
-                </span>
-                <span style={styles.vitalUnit}>bpm</span>
-              </div>
-              <div style={styles.vitalItem}>
-                <span style={styles.vitalLabel}>RR</span>
-                <span style={{ ...styles.vitalValue, color: '#F59E0B' }}>
-                  {vitals.respRate}
-                </span>
-                <span style={styles.vitalUnit}>/min</span>
-              </div>
-            </div>
-          </div>
         </div>
 
         {/* RIGHT COLUMN: Event Log */}
@@ -584,12 +535,6 @@ const styles = {
     padding: '16px 0', marginTop: 8,
     borderTop: '1px solid #1E293B',
   },
-
-  vitalsGrid: { display: 'flex', gap: 12, justifyContent: 'space-around' },
-  vitalItem: { display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2 },
-  vitalLabel: { color: '#64748B', fontSize: 11, fontFamily: 'JetBrains Mono', fontWeight: 600 },
-  vitalValue: { fontSize: 28, fontWeight: 700, fontFamily: 'JetBrains Mono' },
-  vitalUnit: { color: '#64748B', fontSize: 11, fontFamily: 'JetBrains Mono' },
 
   eventLog: {
     maxHeight: 400, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 4,
