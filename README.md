@@ -38,18 +38,6 @@ NeoGuide is a **real-time intubation guidance system** that combines computer vi
 | CV Model | TensorFlow Lite (MobileNetV3Small) | On-device glottis detection |
 | Camera | Webcam via getUserMedia API | Simulated stylet camera feed |
 
-## ML Model
-
-We trained a custom **MobileNetV3Small** binary classification model on laryngoscopy images from the BAGLS benchmark dataset.
-
-- **Dataset**: 3,500 expert-annotated laryngoscopy image pairs (7 hospitals)
-- **Training**: Two-phase — frozen base feature extraction, then top-layer fine-tuning
-- **Accuracy**: 94.9% on held-out test set
-- **AUC**: 0.984
-- **Exported size**: 1.19 MB (TensorFlow Lite with dynamic range quantization)
-
-See the full training pipeline in the Colab notebook linked above.
-
 ## Quick Start
 
 ### Prerequisites
@@ -104,23 +92,6 @@ Webcam
 | Tracheal | 2.0 cm | **Optimal — stop here** |
 | Carinal | 3.5 cm | Warning — stop advancing |
 | Bronchial | 4.5 cm | Danger — withdraw immediately |
-
-## Project Structure
-
-```
-neoguide/
-├── src/
-│   ├── components/
-│   │   └── Dashboard.jsx       # Main dashboard (camera, depth gauge, event log)
-│   ├── services/
-│   │   ├── geminiVision.js     # Gemini Vision API integration
-│   │   └── voiceAlerts.js      # ElevenLabs TTS with priority queue
-│   └── hooks/
-│       └── useWebcam.js        # Webcam stream management
-├── index.html
-├── vite.config.js
-└── package.json
-```
 
 ## Datasets
 
